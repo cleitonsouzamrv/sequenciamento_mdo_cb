@@ -1,0 +1,869 @@
+import streamlit as st
+import pandas as pd
+import datetime
+import io
+import unicodedata
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+import time
+
+st.set_page_config(page_title="Sequenciador de Obras MRV", layout="wide")
+
+COLUNAS_ESPERADAS = {
+    "Base": {
+        "descricao": "Planilha principal com os empreendimentos, engenheiros e informações de sequenciamento.",
+        "colunas": [
+            {"coluna": "OBRA",                          "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Nome do empreendimento/obra"},
+            {"coluna": "Cód. CRM",                      "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Código identificador da obra no CRM"},
+            {"coluna": "Regional",                      "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Regional responsável pela obra"},
+            {"coluna": "Cidade",                        "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Cidade onde a obra está localizada"},
+            {"coluna": "CLUSTER",                       "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Cluster ao qual a obra pertence"},
+            {"coluna": "AMP (abr)",                     "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Abreviação do AMP da obra"},
+            {"coluna": "Status",                        "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Status atual da obra"},
+            {"coluna": "Data Fundação",                 "tipo": "Data",   "obrigatorio": "✅", "descricao": "Data de fundação/início da obra"},
+            {"coluna": "Data Terraplenagem",            "tipo": "Data",   "obrigatorio": "✅", "descricao": "Marco de início para o sequenciamento"},
+            {"coluna": "Data Encerramento Módulo",      "tipo": "Data",   "obrigatorio": "✅", "descricao": "Marco de término para o sequenciamento"},
+            {"coluna": "COMPLEXIDADE",                  "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nível de complexidade da obra (NÃO COMPLEXO / MÉDIO / COMPLEXO)"},
+            {"coluna": "Engenheiro 1",                  "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Nome do primeiro engenheiro responsável"},
+            {"coluna": "Engenheiro 2",                  "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nome do segundo engenheiro responsável (quando houver)"},
+            {"coluna": "Engenheiro CRM",                "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Engenheiro registrado no CRM"},
+            {"coluna": "Gestor CRM",                    "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Gestor registrado no CRM"},
+            {"coluna": "Responsável 1",                 "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Responsável principal pela obra"},
+            {"coluna": "Responsável 2 (quando houver)", "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Segundo responsável pela obra (quando houver)"},
+            {"coluna": "Senioridade ENG1",              "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nível de senioridade do Engenheiro 1"},
+            {"coluna": "Senioridade ENG2",              "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nível de senioridade do Engenheiro 2"},
+            {"coluna": "Gestor",                        "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Gestor responsável pela obra"},
+            {"coluna": "Observação",                    "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Observações gerais sobre a obra"},
+        ]
+    },
+    "Sheet1": {
+        "descricao": "Planilha de catálogo com todos os empreendimentos disponíveis para sequenciamento.",
+        "colunas": [
+            {"coluna": "Regional",              "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Regional responsável pelo empreendimento"},
+            {"coluna": "IDTRSICRM",             "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Identificador único do empreendimento no CRM"},
+            {"coluna": "Empreendimento",        "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Nome do empreendimento"},
+            {"coluna": "CLUSTER_CORRIGIDO",     "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Cluster corrigido do empreendimento"},
+            {"coluna": "CIDADE",                "tipo": "Texto",  "obrigatorio": "✅", "descricao": "Cidade onde o empreendimento está localizado"},
+            {"coluna": "Fundação",              "tipo": "Data",   "obrigatorio": "✅", "descricao": "Data prevista de início da fundação"},
+            {"coluna": "Terraplenagem",         "tipo": "Data",   "obrigatorio": "✅", "descricao": "Marco de início para o sequenciamento"},
+            {"coluna": "Encerramento Módulo",   "tipo": "Data",   "obrigatorio": "✅", "descricao": "Marco de término — data prevista de encerramento do módulo"},
+            {"coluna": "Complexidade",          "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nível de complexidade da obra candidata"},
+            {"coluna": "Nome Ref Ajuste",       "tipo": "Texto",  "obrigatorio": "❌", "descricao": "Nome de referência para ajuste — informativo"},
+        ]
+    }
+}
+
+COLUNAS_GERADAS = [
+    {"coluna": "Linha",                      "tipo": "Texto",  "descricao": "Pivot principal: CLUSTER | Sigla Senioridade | Responsável 1"},
+    {"coluna": "Tipo de Linha",              "tipo": "Texto",  "descricao": "'Existente' = linha veio da guia Base | 'Nova' = linha criada pelo app"},
+    {"coluna": "Ordem",                      "tipo": "Número", "descricao": "Sequência da obra dentro da linha (1 = atual/primeira, 2 = próxima, ...)"},
+    {"coluna": "OBRA",                       "tipo": "Texto",  "descricao": "Nome da obra"},
+    {"coluna": "Cód. CRM",                   "tipo": "Texto",  "descricao": "Código CRM da obra"},
+    {"coluna": "Regional",                   "tipo": "Texto",  "descricao": "Regional da obra"},
+    {"coluna": "Cidade",                     "tipo": "Texto",  "descricao": "Cidade da obra"},
+    {"coluna": "CLUSTER",                    "tipo": "Texto",  "descricao": "Cluster da obra"},
+    {"coluna": "Complexidade Obra",          "tipo": "Texto",  "descricao": "Nível de complexidade da obra"},
+    {"coluna": "Senioridade ENG1",           "tipo": "Texto",  "descricao": "Senioridade do Engenheiro 1 (apenas Ordem 1 de linhas existentes)"},
+    {"coluna": "Data Fundação",              "tipo": "Data",   "descricao": "Data de fundação da obra"},
+    {"coluna": "Data Terraplenagem",         "tipo": "Data",   "descricao": "Data de terraplenagem — marco de início"},
+    {"coluna": "Data Encerramento Módulo",   "tipo": "Data",   "descricao": "Data de encerramento — marco de término"},
+    {"coluna": "Marco Início Obra A",        "tipo": "Data",   "descricao": "Data usada como marco de início da Obra A (Terraplenagem ou Fundação, conforme seleção do usuário)"},
+    {"coluna": "Simultaneidade",             "tipo": "Texto",  "descricao": "'Sim' = obra estava simultânea na linha e foi devolvida ao pool | vazio = fluxo normal"},
+    {"coluna": "Fonte da Próxima Obra",      "tipo": "Texto",  "descricao": "'DH' = veio da guia Base | 'Ferramenta' = sugerida pelo app. Vazio para Ordem 1."},
+    {"coluna": "Origem Sequenciamento",      "tipo": "Texto",  "descricao": "'Sequenciamento DH' = sequência já existia na Base | 'Sequenciamento - ferramenta' = sugerida pelo app"},
+    {"coluna": "Latência (Dias)",            "tipo": "Número", "descricao": "Gap em dias entre encerramento da obra anterior e terraplenagem desta"},
+    {"coluna": "Distância (km)",             "tipo": "Número", "descricao": "Distância em km da obra anterior para esta"},
+]
+
+LEGENDA = {
+    "✅ Obrigatório":     "A coluna deve estar presente e preenchida para o sequenciamento funcionar.",
+    "❌ Gerado pelo app": "Coluna criada/preenchida automaticamente pelo sequenciador.",
+}
+
+COMPLEXIDADES_PERMITIDAS = {
+    "JUNIOR":  {"NAO COMPLEXO"},
+    "PLENO":   {"NAO COMPLEXO", "MEDIO"},
+    "SENIOR":  {"NAO COMPLEXO", "MEDIO", "COMPLEXO"},
+}
+
+
+def _normalizar(texto: str) -> str:
+    nfkd = unicodedata.normalize("NFD", texto)
+    sem_acento = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
+    return sem_acento.upper()
+
+
+def sigla_senioridade(valor) -> str:
+    if pd.isna(valor) or str(valor).strip() == "":
+        return ""
+    v = _normalizar(str(valor).strip())
+    if "ENGENHEIRO" in v or "ENGENHEIRA" in v:
+        return "EN"
+    if "ANALISTA" in v:
+        return "AN"
+    return ""
+
+
+def nivel_senioridade(valor) -> str:
+    if pd.isna(valor) or str(valor).strip() == "":
+        return ""
+    v = _normalizar(str(valor).strip())
+    if v.endswith("JUNIOR"):
+        return "JUNIOR"
+    if v.endswith("PLENO"):
+        return "PLENO"
+    if v.endswith("SENIOR"):
+        return "SENIOR"
+    return ""
+
+
+def complexidades_permitidas_para(valor_senioridade) -> set:
+    nivel = nivel_senioridade(valor_senioridade)
+    return COMPLEXIDADES_PERMITIDAS.get(nivel, set())
+
+
+def montar_linha(row, c_cluster, c_senioridade, c_resp1) -> str:
+    cluster = str(row[c_cluster]).strip()       if pd.notna(row[c_cluster])  else ""
+    sigla   = sigla_senioridade(row[c_senioridade])
+    resp1   = str(row[c_resp1]).strip().upper() if pd.notna(row[c_resp1])    else ""
+    partes  = [p for p in [cluster, sigla, resp1] if p != ""]
+    return " | ".join(partes)
+
+
+def converter_data_mrv(data_str):
+    if isinstance(data_str, datetime.time):
+        return None
+    if pd.isna(data_str) or str(data_str).strip() == "":
+        return None
+    if isinstance(data_str, (datetime.datetime, pd.Timestamp)):
+        return data_str
+    meses_map = {
+        'jan': '01', 'fev': '02', 'mar': '03', 'abr': '04', 'mai': '05', 'jun': '06',
+        'jul': '07', 'ago': '08', 'set': '09', 'out': '10', 'nov': '11', 'dez': '12'
+    }
+    try:
+        s = str(data_str).lower().replace('/', ' ').split()
+        if len(s) == 3:
+            dia = s[0].zfill(2)
+            mes = meses_map.get(s[1], "01")
+            ano = s[2]
+            if len(ano) == 2:
+                ano = "20" + ano
+            return pd.to_datetime(f"{ano}-{mes}-{dia}")
+    except:
+        return pd.to_datetime(data_str, errors='coerce')
+    return pd.to_datetime(data_str, errors='coerce')
+
+
+def carregar_tabela_blindada(file, sheet_name, coluna_referencia):
+    df_cru = pd.read_excel(file, sheet_name=sheet_name, header=None)
+    linha_cabecalho = None
+    for i, row in df_cru.iterrows():
+        if coluna_referencia in [str(val).strip() for val in row.values]:
+            linha_cabecalho = i
+            break
+    if linha_cabecalho is not None:
+        df = pd.read_excel(file, sheet_name=sheet_name, skiprows=linha_cabecalho)
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+    return pd.read_excel(file, sheet_name=sheet_name)
+
+
+@st.cache_data
+def obter_dicionario_coordenadas(lista_cidades):
+    geolocator  = Nominatim(user_agent="mrv_sequenciador_v12")
+    mapa_coords = {}
+    prog        = st.progress(0)
+    status      = st.empty()
+    for i, cidade in enumerate(lista_cidades):
+        status.text(f"🌍 Obtendo coordenadas: {cidade} ({i+1}/{len(lista_cidades)})")
+        try:
+            location = geolocator.geocode(f"{cidade}, Brasil", timeout=10)
+            mapa_coords[cidade] = (location.latitude, location.longitude) if location else None
+            time.sleep(1.1)
+        except:
+            mapa_coords[cidade] = None
+        prog.progress((i + 1) / len(lista_cidades))
+    status.empty()
+    prog.empty()
+    return mapa_coords
+
+
+def render_guia_colunas():
+    with st.expander("📋 Ver estrutura esperada das planilhas (clique para expandir)", expanded=False):
+        st.markdown("### 📌 Legenda de Obrigatoriedade")
+        cols_leg = st.columns(2)
+        for idx, (icone, desc) in enumerate(LEGENDA.items()):
+            cols_leg[idx].info(f"**{icone}**\n\n{desc}")
+        st.divider()
+        icones_aba = {"Base": "📄 Planilha 1 — Base", "Sheet1": "📄 Planilha 2 — Todos Empreendimentos"}
+        for aba, info in COLUNAS_ESPERADAS.items():
+            st.markdown(f"### 🗂️ {icones_aba[aba]} › Guia: `{aba}`")
+            st.caption(info["descricao"])
+            df_cols         = pd.DataFrame(info["colunas"])
+            df_cols.columns = ["Coluna", "Tipo de Dado", "Obrigatório", "Descrição"]
+            def colorir_linha(row):
+                if row["Obrigatório"] == "✅":
+                    return ["background-color: #e6f4ea"] * len(row)
+                return ["background-color: #f1f3f4"] * len(row)
+            st.dataframe(
+                df_cols.style.apply(colorir_linha, axis=1),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Coluna":       st.column_config.TextColumn("Coluna",       width="medium"),
+                    "Tipo de Dado": st.column_config.TextColumn("Tipo de Dado", width="small"),
+                    "Obrigatório":  st.column_config.TextColumn("Obrigatório",  width="small"),
+                    "Descrição":    st.column_config.TextColumn("Descrição",    width="large"),
+                }
+            )
+            st.markdown("")
+        st.divider()
+        st.markdown("### ⚙️ Colunas geradas automaticamente pelo sequenciador")
+        st.caption("Adicionadas na planilha de saída — não precisam existir nas planilhas originais.")
+        df_geradas         = pd.DataFrame(COLUNAS_GERADAS)
+        df_geradas.columns = ["Coluna", "Tipo de Dado", "Descrição"]
+        st.dataframe(
+            df_geradas.style.apply(lambda row: ["background-color: #fff8e1"] * len(row), axis=1),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Coluna":       st.column_config.TextColumn("Coluna",       width="medium"),
+                "Tipo de Dado": st.column_config.TextColumn("Tipo de Dado", width="small"),
+                "Descrição":    st.column_config.TextColumn("Descrição",    width="large"),
+            }
+        )
+        st.markdown(
+            "💡 **Regra de complexidade:** JUNIOR → apenas NÃO COMPLEXO | "
+            "PLENO → NÃO COMPLEXO e MÉDIO | SENIOR → qualquer complexidade. "
+            "**Simultaneidade:** quando uma linha possui N obras ao mesmo tempo, apenas a de maior encerramento "
+            "é mantida ativa para sequenciamento; as demais são devolvidas ao pool de novas linhas."
+        )
+
+
+def validar_colunas(df, aba):
+    obrigatorias = [c["coluna"] for c in COLUNAS_ESPERADAS[aba]["colunas"] if c["obrigatorio"] == "✅"]
+    return [c for c in obrigatorias if c not in df.columns]
+
+
+def resolver_simultaneidade(df_base, c_linha, c_cod_crm, c_data_encerr, c_obra):
+    ids_devolvidos  = set()
+    info_devolvidas = []
+    grupos          = df_base.groupby(c_linha)
+    indices_manter  = []
+
+    for linha_id, grupo in grupos:
+        if len(grupo) == 1:
+            indices_manter.append(grupo.index[0])
+            continue
+        grupo_valido = grupo[grupo[c_data_encerr].notna()]
+        if grupo_valido.empty:
+            indices_manter.append(grupo.index[0])
+            continue
+        idx_max = grupo_valido[c_data_encerr].idxmax()
+        indices_manter.append(idx_max)
+        for idx, row in grupo.iterrows():
+            if idx == idx_max:
+                continue
+            cod = str(row.get(c_cod_crm, "")).strip()
+            if cod:
+                ids_devolvidos.add(cod)
+            info_devolvidas.append({
+                "_idx_original": idx,
+                "_linha_id":     linha_id,
+                "_cod_crm":      cod,
+                "_row":          row,
+            })
+
+    df_representantes = df_base.loc[indices_manter].copy()
+    return df_representantes, ids_devolvidos, info_devolvidas
+
+
+def _origem_seq_existente(fonte_prox):
+    if fonte_prox is None or str(fonte_prox).strip() == "":
+        return None
+    if str(fonte_prox).strip().upper() == "DH":
+        return "Sequenciamento DH"
+    return "Sequenciamento - ferramenta"
+
+
+def montar_output_empilhado(df_base_repr, df_simultaneas, df_novas_linhas, mapa_emp,
+                             c_linha, c_obra, c_cod_crm, c_regional,
+                             c_cidade, c_cluster, c_complexidade_base, c_senioridade,
+                             c_data_fund, c_data_terra, c_data_encerr,
+                             c_prox_obra, c_id_prox, c_terra_prox, c_encerr_prox,
+                             c_cidade_prox, c_origem, c_latencia, c_distancia,
+                             c_cluster_emp, c_fund_emp, c_terra_emp, c_encerr_emp,
+                             c_complexidade_emp, c_fonte_prox,
+                             marco_inicio_obra_a="Terraplenagem"):
+
+    colunas_saida = [
+        "Linha", "Tipo de Linha", "Ordem", "OBRA", "Cód. CRM", "Regional", "Cidade", "CLUSTER",
+        "Complexidade Obra", "Senioridade ENG1",
+        "Data Fundação", "Data Terraplenagem", "Data Encerramento Módulo",
+        "Marco Início Obra A",
+        "Simultaneidade",
+        "Fonte da Próxima Obra", "Origem Sequenciamento",
+        "Latência (Dias)", "Distância (km)",
+    ]
+
+    c_marco_base = c_data_terra if marco_inicio_obra_a == "Terraplenagem" else c_data_fund
+
+    linhas = []
+
+    for _, row in df_base_repr.iterrows():
+        linha_id           = row[c_linha]
+        complexidade_atual = row.get(c_complexidade_base) if c_complexidade_base in df_base_repr.columns else None
+        senioridade_atual  = row.get(c_senioridade)       if c_senioridade        in df_base_repr.columns else None
+        marco_valor        = row.get(c_marco_base)        if c_marco_base         in df_base_repr.columns else None
+
+        linhas.append({
+            "Linha":                    linha_id,
+            "Tipo de Linha":            "Existente",
+            "Ordem":                    1,
+            "OBRA":                     row.get(c_obra),
+            "Cód. CRM":                 row.get(c_cod_crm),
+            "Regional":                 row.get(c_regional),
+            "Cidade":                   row.get(c_cidade),
+            "CLUSTER":                  row.get(c_cluster),
+            "Complexidade Obra":        complexidade_atual,
+            "Senioridade ENG1":         senioridade_atual,
+            "Data Fundação":            row.get(c_data_fund),
+            "Data Terraplenagem":       row.get(c_data_terra)  if c_data_terra  in df_base_repr.columns else None,
+            "Data Encerramento Módulo": row.get(c_data_encerr) if c_data_encerr in df_base_repr.columns else None,
+            "Marco Início Obra A":      marco_valor,
+            "Simultaneidade":           None,
+            "Fonte da Próxima Obra":    None,
+            "Origem Sequenciamento":    None,
+            "Latência (Dias)":          None,
+            "Distância (km)":           None,
+        })
+
+        tem_prox = pd.notna(row.get(c_prox_obra)) and str(row.get(c_prox_obra, "")).strip() != ""
+        if not tem_prox:
+            continue
+
+        id_prox    = row.get(c_id_prox)
+        emp_match  = mapa_emp.get(id_prox, {})
+        fonte_prox = row.get(c_fonte_prox)
+
+        linhas.append({
+            "Linha":                    linha_id,
+            "Tipo de Linha":            "Existente",
+            "Ordem":                    2,
+            "OBRA":                     row.get(c_prox_obra),
+            "Cód. CRM":                 id_prox,
+            "Regional":                 emp_match.get("Regional"),
+            "Cidade":                   row.get(c_cidade_prox),
+            "CLUSTER":                  emp_match.get(c_cluster_emp),
+            "Complexidade Obra":        emp_match.get(c_complexidade_emp) if c_complexidade_emp else None,
+            "Senioridade ENG1":         None,
+            "Data Fundação":            emp_match.get(c_fund_emp),
+            "Data Terraplenagem":       row.get(c_terra_prox),
+            "Data Encerramento Módulo": row.get(c_encerr_prox),
+            "Marco Início Obra A":      None,
+            "Simultaneidade":           None,
+            "Fonte da Próxima Obra":    fonte_prox,
+            "Origem Sequenciamento":    _origem_seq_existente(fonte_prox),
+            "Latência (Dias)":          row.get(c_latencia),
+            "Distância (km)":           row.get(c_distancia),
+        })
+
+    for item in df_simultaneas:
+        row             = item["_row"]
+        marco_valor_sim = row.get(c_marco_base) if c_marco_base in row.index else None
+        linhas.append({
+            "Linha":                    item["_linha_id"],
+            "Tipo de Linha":            "Existente",
+            "Ordem":                    1,
+            "OBRA":                     row.get(c_obra),
+            "Cód. CRM":                 row.get(c_cod_crm),
+            "Regional":                 row.get(c_regional),
+            "Cidade":                   row.get(c_cidade),
+            "CLUSTER":                  row.get(c_cluster),
+            "Complexidade Obra":        row.get(c_complexidade_base),
+            "Senioridade ENG1":         row.get(c_senioridade),
+            "Data Fundação":            row.get(c_data_fund),
+            "Data Terraplenagem":       row.get(c_data_terra)  if c_data_terra  in row.index else None,
+            "Data Encerramento Módulo": row.get(c_data_encerr) if c_data_encerr in row.index else None,
+            "Marco Início Obra A":      marco_valor_sim,
+            "Simultaneidade":           "Sim — devolvida ao pool",
+            "Fonte da Próxima Obra":    None,
+            "Origem Sequenciamento":    None,
+            "Latência (Dias)":          None,
+            "Distância (km)":           None,
+        })
+
+    for _, row in df_novas_linhas.iterrows():
+        linhas.append({
+            "Linha":                    row["Linha"],
+            "Tipo de Linha":            "Nova",
+            "Ordem":                    row["Ordem"],
+            "OBRA":                     row["OBRA"],
+            "Cód. CRM":                 row["Cód. CRM"],
+            "Regional":                 row["Regional"],
+            "Cidade":                   row["Cidade"],
+            "CLUSTER":                  row["CLUSTER"],
+            "Complexidade Obra":        row["Complexidade Obra"],
+            "Senioridade ENG1":         None,
+            "Data Fundação":            row["Data Fundação"],
+            "Data Terraplenagem":       row["Data Terraplenagem"],
+            "Data Encerramento Módulo": row["Data Encerramento Módulo"],
+            "Marco Início Obra A":      None,
+            "Simultaneidade":           None,
+            "Fonte da Próxima Obra":    row["Fonte da Próxima Obra"],
+            "Origem Sequenciamento":    row["Origem Sequenciamento"],
+            "Latência (Dias)":          row["Latência (Dias)"],
+            "Distância (km)":           row["Distância (km)"],
+        })
+
+    return pd.DataFrame(linhas, columns=colunas_saida)
+
+
+st.title("🏗️ Sequenciamento de Capacete Branco")
+st.markdown("Faça o upload das duas planilhas abaixo para iniciar o sequenciamento automático de obras.")
+
+render_guia_colunas()
+st.divider()
+
+col_up1, col_up2 = st.columns(2)
+with col_up1:
+    st.markdown("#### 📄 Planilha 1 — Base")
+    st.caption("Deve conter a guia **Base** com os engenheiros e obras atuais.")
+    arquivo_base = st.file_uploader("Suba a planilha Base aqui", type=["xlsx"], key="upload_base")
+with col_up2:
+    st.markdown("#### 📄 Planilha 2 — Todos Empreendimentos")
+    st.caption("Deve conter a guia **Sheet1** com o catálogo de obras candidatas.")
+    arquivo_empreendimentos = st.file_uploader("Suba a planilha de Empreendimentos aqui", type=["xlsx"], key="upload_emp")
+
+ambos_carregados = arquivo_base is not None and arquivo_empreendimentos is not None
+
+if arquivo_base and not arquivo_empreendimentos:
+    st.info("⏳ Aguardando o upload da **Planilha 2 — Todos Empreendimentos** para continuar.")
+if arquivo_empreendimentos and not arquivo_base:
+    st.info("⏳ Aguardando o upload da **Planilha 1 — Base** para continuar.")
+
+if ambos_carregados:
+    with st.spinner("Carregando planilhas..."):
+        df_base = carregar_tabela_blindada(arquivo_base, "Base", "OBRA")
+        df_emp  = carregar_tabela_blindada(arquivo_empreendimentos, "Sheet1", "IDTRSICRM")
+
+    erros_base = validar_colunas(df_base, "Base")
+    erros_emp  = validar_colunas(df_emp,  "Sheet1")
+    if erros_base:
+        st.error(f"❌ Colunas obrigatórias ausentes na guia 'Base': {', '.join(erros_base)}")
+    if erros_emp:
+        st.error(f"❌ Colunas obrigatórias ausentes na guia 'Sheet1': {', '.join(erros_emp)}")
+    if erros_base or erros_emp:
+        st.stop()
+
+    col_info1, col_info2 = st.columns(2)
+    with col_info1:
+        st.success(f"✅ Base carregada — {len(df_base)} registros")
+        with st.expander("🔍 Pré-visualização — Base", expanded=False):
+            st.dataframe(df_base, use_container_width=True)
+    with col_info2:
+        st.success(f"✅ Empreendimentos carregados — {len(df_emp)} registros")
+        with st.expander("🔍 Pré-visualização — Sheet1", expanded=False):
+            st.dataframe(df_emp, use_container_width=True)
+
+    st.divider()
+
+    st.markdown("#### ⚙️ Configuração do Marco de Início da Obra A")
+    st.caption(
+        "Selecione qual data será usada como **marco de início** da Obra A (linhas existentes, Ordem 1). "
+        "Essa data será exibida na coluna **'Marco Início Obra A'** no resultado."
+    )
+    marco_inicio_obra_a = st.radio(
+        label="Marco de início da Obra A:",
+        options=["Terraplenagem", "Fundação"],
+        index=0,
+        horizontal=True,
+        help=(
+            "**Terraplenagem** → usa a coluna 'Data Terraplenagem' da guia Base.\n\n"
+            "**Fundação** → usa a coluna 'Data Fundação' da guia Base."
+        ),
+        key="marco_inicio_obra_a"
+    )
+
+    if marco_inicio_obra_a == "Terraplenagem":
+        st.info("📌 Marco selecionado: **Terraplenagem** — coluna `Data Terraplenagem` (guia Base)")
+    else:
+        st.info("📌 Marco selecionado: **Fundação** — coluna `Data Fundação` (guia Base)")
+
+    st.divider()
+
+    col_btn, col_status = st.columns([1, 3])
+    with col_btn:
+        iniciar = st.button(
+            label="▶️ Iniciar Sequenciamento",
+            type="primary",
+            width="stretch",
+            key="btn_iniciar"
+        )
+    if iniciar:
+        st.session_state["sequenciamento_rodando"] = True
+
+    if not st.session_state.get("sequenciamento_rodando", False):
+        with col_status:
+            st.info("⏳ Configure o marco de início acima e clique em **▶️ Iniciar Sequenciamento** para começar.")
+        st.stop()
+
+    with st.expander("🔬 Diagnóstico: valores únicos de Senioridade ENG1", expanded=False):
+        if "Senioridade ENG1" in df_base.columns:
+            vals = df_base["Senioridade ENG1"].dropna().unique().tolist()
+            st.write("Valores encontrados na coluna:", vals)
+            for v in vals:
+                st.write(f"  `{v}` → sigla: **'{sigla_senioridade(v)}'** | nível: **'{nivel_senioridade(v)}'** | complexidades permitidas: **{complexidades_permitidas_para(v)}**")
+        else:
+            st.warning("Coluna 'Senioridade ENG1' não encontrada na Base.")
+
+    c_obra              = "OBRA"
+    c_cod_crm           = "Cód. CRM"
+    c_regional          = "Regional"
+    c_cidade            = "Cidade"
+    c_cluster           = "CLUSTER"
+    c_data_fund         = "Data Fundação"
+    c_data_terra        = "Data Terraplenagem"
+    c_data_encerr       = "Data Encerramento Módulo"
+    c_complexidade_base = "COMPLEXIDADE"
+    c_resp1             = "Responsável 1"
+    c_senioridade       = "Senioridade ENG1"
+    c_linha             = "Linha"
+
+    c_id_emp            = "IDTRSICRM"
+    c_nome_emp          = "Empreendimento"
+    c_cidade_emp        = "CIDADE"
+    c_cluster_emp       = "CLUSTER_CORRIGIDO"
+    c_fund_emp          = "Fundação"
+    c_terra_emp         = "Terraplenagem"
+    c_encerr_emp        = "Encerramento Módulo"
+    c_complexidade_emp  = "Complexidade"
+    c_regional_emp      = "Regional"
+
+    c_prox_obra         = "Próxima Obra"
+    c_id_prox           = "ID CRM - Próxima Obra"
+    c_terra_prox        = "Terraplenagem - Próxima Obra"
+    c_encerr_prox       = "Encerramento - Próxima Obra"
+    c_cidade_prox       = "Cidade - Próxima Obra"
+    c_origem            = "Origem Sequenciamento"
+    c_latencia          = "Latência (Dias)"
+    c_distancia         = "Distância (km)"
+    c_fonte_prox        = "Fonte da Próxima Obra"
+
+    for col in [c_data_fund, c_data_terra, c_data_encerr]:
+        if col in df_base.columns:
+            df_base[col] = df_base[col].apply(converter_data_mrv)
+
+    for col in [c_fund_emp, c_terra_emp, c_encerr_emp]:
+        if col in df_emp.columns:
+            df_emp[col] = df_emp[col].apply(converter_data_mrv)
+
+    if c_senioridade not in df_base.columns:
+        df_base[c_senioridade] = ""
+    if c_complexidade_base not in df_base.columns:
+        df_base[c_complexidade_base] = ""
+    if c_complexidade_emp not in df_emp.columns:
+        df_emp[c_complexidade_emp] = ""
+
+    df_base[c_linha] = df_base.apply(
+        lambda row: montar_linha(row, c_cluster, c_senioridade, c_resp1), axis=1
+    )
+
+    df_base_repr, ids_devolvidos, info_devolvidas = resolver_simultaneidade(
+        df_base, c_linha, c_cod_crm, c_data_encerr, c_obra
+    )
+
+    if info_devolvidas:
+        nomes_dev = [d["_row"].get(c_obra, "") for d in info_devolvidas]
+        st.warning(
+            f"⚠️ **{len(info_devolvidas)} obra(s) simultânea(s) detectada(s)** e devolvida(s) ao pool de novas linhas: "
+            f"{', '.join(str(n) for n in nomes_dev)}"
+        )
+
+    ids_base = set(df_base_repr[c_cod_crm].dropna().astype(str).str.strip().unique())
+    hoje     = pd.Timestamp(datetime.date.today())
+
+    df_candidatas = df_emp[
+        df_emp[c_terra_emp].notna() &
+        df_emp[c_encerr_emp].notna() &
+        df_emp[c_cidade_emp].notna() &
+        (df_emp[c_terra_emp] >= hoje) &
+        (~df_emp[c_id_emp].astype(str).str.strip().isin(ids_base))
+    ].copy()
+
+    df_candidatas["_complexidade_norm"] = df_candidatas[c_complexidade_emp].apply(
+        lambda x: _normalizar(str(x).strip()) if pd.notna(x) and str(x).strip() != "" else ""
+    )
+
+    cidades_unicas = list(
+        set(df_base_repr[c_cidade].dropna().unique()) |
+        set(df_emp[c_cidade_emp].dropna().unique())
+    )
+    coord_cache = obter_dicionario_coordenadas(cidades_unicas)
+
+    for col in [c_prox_obra, c_id_prox, c_terra_prox, c_encerr_prox,
+                c_cidade_prox, c_origem, c_latencia, c_distancia, c_fonte_prox]:
+        if col not in df_base_repr.columns:
+            df_base_repr[col] = None
+
+    mask_dh = df_base_repr[c_prox_obra].notna() & (df_base_repr[c_prox_obra].astype(str).str.strip() != "")
+    df_base_repr.loc[mask_dh, c_fonte_prox] = "DH"
+    df_base_repr.loc[mask_dh, c_origem]     = "Sequenciamento DH"
+
+    obras_alocadas = set(df_base_repr[c_id_prox].dropna().astype(str).str.strip().unique())
+    obras_alocadas |= ids_base
+
+    barra      = st.progress(0)
+    status_seq = st.empty()
+    total      = len(df_base_repr)
+
+    for idx, (i, row) in enumerate(df_base_repr.iterrows()):
+        status_seq.text(f"🔄 Sequenciando linhas existentes: {row[c_obra]} ({idx+1}/{total})")
+        barra.progress((idx + 1) / total)
+
+        ja_tem_prox = pd.notna(row[c_prox_obra]) and str(row[c_prox_obra]).strip() != ""
+        if ja_tem_prox:
+            continue
+
+        fim_atual  = row[c_data_encerr]
+        cid_atual  = row[c_cidade]
+        clu_atual  = row[c_cluster]
+        sen_atual  = row[c_senioridade]
+
+        if pd.isna(fim_atual) or pd.isna(cid_atual) or pd.isna(clu_atual):
+            continue
+
+        permitidas  = complexidades_permitidas_para(sen_atual)
+        coord_atual = coord_cache.get(cid_atual)
+
+        cands = df_candidatas[
+            (df_candidatas[c_terra_emp] >= fim_atual) &
+            (df_candidatas[c_cluster_emp] == clu_atual) &
+            (~df_candidatas[c_id_emp].astype(str).str.strip().isin(obras_alocadas))
+        ].copy()
+
+        if cands.empty:
+            continue
+        if permitidas:
+            cands = cands[cands["_complexidade_norm"].isin(permitidas)].copy()
+        if cands.empty:
+            continue
+
+        def get_dist(cid_b):
+            c_b = coord_cache.get(cid_b)
+            return geodesic(coord_atual, c_b).kilometers if coord_atual and c_b else 9999.0
+
+        cands["_dist"] = cands[c_cidade_emp].apply(get_dist)
+        cands = cands[cands["_dist"] <= 200].copy()
+        if cands.empty:
+            continue
+
+        cands["_gap"] = (cands[c_terra_emp] - fim_atual).dt.days
+        res = cands.sort_values("_gap").iloc[0]
+
+        df_base_repr.at[i, c_prox_obra]   = res[c_nome_emp]
+        df_base_repr.at[i, c_id_prox]     = res[c_id_emp]
+        df_base_repr.at[i, c_terra_prox]  = res[c_terra_emp]
+        df_base_repr.at[i, c_encerr_prox] = res[c_encerr_emp]
+        df_base_repr.at[i, c_cidade_prox] = res[c_cidade_emp]
+        df_base_repr.at[i, c_origem]      = "Sequenciamento - ferramenta"
+        df_base_repr.at[i, c_latencia]    = res["_gap"]
+        df_base_repr.at[i, c_distancia]   = round(res["_dist"], 2)
+        df_base_repr.at[i, c_fonte_prox]  = "Ferramenta"
+        obras_alocadas.add(str(res[c_id_emp]).strip())
+
+    status_seq.empty()
+    barra.empty()
+
+    obras_nao_alocadas = df_candidatas[
+        ~df_candidatas[c_id_emp].astype(str).str.strip().isin(obras_alocadas)
+    ].copy()
+
+    ids_devolvidos_validos = {
+        d["_cod_crm"] for d in info_devolvidas
+        if d["_cod_crm"] and d["_cod_crm"] not in obras_alocadas
+    }
+
+    if ids_devolvidos_validos:
+        df_devolvidas_emp = df_emp[
+            df_emp[c_id_emp].astype(str).str.strip().isin(ids_devolvidos_validos)
+        ].copy()
+        df_devolvidas_emp["_complexidade_norm"] = df_devolvidas_emp[c_complexidade_emp].apply(
+            lambda x: _normalizar(str(x).strip()) if pd.notna(x) and str(x).strip() != "" else ""
+        )
+        obras_nao_alocadas = pd.concat([df_devolvidas_emp, obras_nao_alocadas], ignore_index=True)
+        obras_nao_alocadas = obras_nao_alocadas.drop_duplicates(subset=[c_id_emp])
+
+    novas_linhas_rows = []
+
+    if not obras_nao_alocadas.empty:
+        st.info(f"🔁 {len(obras_nao_alocadas)} empreendimento(s) no pool (não alocados + simultâneos) — criando novas linhas por cluster...")
+
+        obras_nao_alocadas_sorted = obras_nao_alocadas.sort_values(c_terra_emp)
+        contador_novas_linhas     = {}
+        novas_linhas_dict         = {}
+
+        barra2      = st.progress(0)
+        status_seq2 = st.empty()
+        total2      = len(obras_nao_alocadas_sorted)
+
+        for idx2, (_, emp_row) in enumerate(obras_nao_alocadas_sorted.iterrows()):
+            status_seq2.text(f"🆕 Criando novas linhas: {emp_row[c_nome_emp]} ({idx2+1}/{total2})")
+            barra2.progress((idx2 + 1) / total2)
+
+            cluster_emp = str(emp_row.get(c_cluster_emp, "")).strip()
+            id_emp      = str(emp_row[c_id_emp]).strip()
+
+            if id_emp in obras_alocadas:
+                continue
+
+            linha_nova_key = None
+            melhor_gap     = None
+
+            for key, info in novas_linhas_dict.items():
+                if info["cluster"] != cluster_emp:
+                    continue
+                ultimo_encerr = info["ultimo_encerr"]
+                if pd.isna(ultimo_encerr) or ultimo_encerr is None:
+                    continue
+                if emp_row[c_terra_emp] < ultimo_encerr:
+                    continue
+                gap       = (emp_row[c_terra_emp] - ultimo_encerr).days
+                coord_ult = coord_cache.get(info["ultima_cidade"])
+                coord_emp = coord_cache.get(str(emp_row.get(c_cidade_emp, "")))
+                dist      = geodesic(coord_ult, coord_emp).kilometers if coord_ult and coord_emp else 9999.0
+                if dist > 200:
+                    continue
+                if melhor_gap is None or gap < melhor_gap:
+                    melhor_gap     = gap
+                    linha_nova_key = key
+
+            if linha_nova_key is None:
+                if cluster_emp not in contador_novas_linhas:
+                    contador_novas_linhas[cluster_emp] = 0
+                contador_novas_linhas[cluster_emp] += 1
+                num            = contador_novas_linhas[cluster_emp]
+                linha_nova_key = f"{cluster_emp} | Linha nova {num}"
+                novas_linhas_dict[linha_nova_key] = {
+                    "cluster":       cluster_emp,
+                    "ultimo_encerr": None,
+                    "ultima_cidade": None,
+                    "ordem":         0,
+                }
+
+            info          = novas_linhas_dict[linha_nova_key]
+            ordem_emp     = info["ordem"] + 1
+            ultimo_encerr = info["ultimo_encerr"]
+            ultima_cidade = info["ultima_cidade"]
+
+            if ultimo_encerr is not None and pd.notna(ultimo_encerr):
+                gap_dias  = (emp_row[c_terra_emp] - ultimo_encerr).days
+                coord_ult = coord_cache.get(str(ultima_cidade))
+                coord_emp = coord_cache.get(str(emp_row.get(c_cidade_emp, "")))
+                dist_km   = round(geodesic(coord_ult, coord_emp).kilometers, 2) if coord_ult and coord_emp else None
+            else:
+                gap_dias = None
+                dist_km  = None
+
+            novas_linhas_rows.append({
+                "Linha":                    linha_nova_key,
+                "Ordem":                    ordem_emp,
+                "OBRA":                     emp_row.get(c_nome_emp),
+                "Cód. CRM":                 emp_row.get(c_id_emp),
+                "Regional":                 emp_row.get(c_regional_emp),
+                "Cidade":                   emp_row.get(c_cidade_emp),
+                "CLUSTER":                  cluster_emp,
+                "Complexidade Obra":        emp_row.get(c_complexidade_emp),
+                "Data Fundação":            emp_row.get(c_fund_emp),
+                "Data Terraplenagem":       emp_row.get(c_terra_emp),
+                "Data Encerramento Módulo": emp_row.get(c_encerr_emp),
+                "Fonte da Próxima Obra":    None,
+                "Origem Sequenciamento":    "Sequenciamento - ferramenta",
+                "Latência (Dias)":          gap_dias,
+                "Distância (km)":           dist_km,
+            })
+
+            novas_linhas_dict[linha_nova_key]["ultimo_encerr"] = emp_row[c_encerr_emp]
+            novas_linhas_dict[linha_nova_key]["ultima_cidade"] = emp_row.get(c_cidade_emp)
+            novas_linhas_dict[linha_nova_key]["ordem"]         = ordem_emp
+            obras_alocadas.add(id_emp)
+
+        barra2.empty()
+        status_seq2.empty()
+
+    df_novas_linhas = pd.DataFrame(novas_linhas_rows) if novas_linhas_rows else pd.DataFrame(
+        columns=["Linha", "Ordem", "OBRA", "Cód. CRM", "Regional", "Cidade", "CLUSTER",
+                 "Complexidade Obra", "Data Fundação", "Data Terraplenagem",
+                 "Data Encerramento Módulo", "Fonte da Próxima Obra",
+                 "Origem Sequenciamento", "Latência (Dias)", "Distância (km)"]
+    )
+
+    st.success(
+        f"✅ Sequenciamento concluído! "
+        f"Linhas existentes: {df_base_repr[c_linha].nunique()} | "
+        f"Obras simultâneas devolvidas: {len(info_devolvidas)} | "
+        f"Novas linhas criadas: {df_novas_linhas['Linha'].nunique() if not df_novas_linhas.empty else 0}"
+    )
+
+    mapa_emp = df_emp.set_index(c_id_emp).to_dict(orient="index")
+
+    df_output = montar_output_empilhado(
+        df_base_repr        = df_base_repr,
+        df_simultaneas      = info_devolvidas,
+        df_novas_linhas     = df_novas_linhas,
+        mapa_emp            = mapa_emp,
+        c_linha             = c_linha,
+        c_obra              = c_obra,
+        c_cod_crm           = c_cod_crm,
+        c_regional          = c_regional,
+        c_cidade            = c_cidade,
+        c_cluster           = c_cluster,
+        c_complexidade_base = c_complexidade_base,
+        c_senioridade       = c_senioridade,
+        c_data_fund         = c_data_fund,
+        c_data_terra        = c_data_terra,
+        c_data_encerr       = c_data_encerr,
+        c_prox_obra         = c_prox_obra,
+        c_id_prox           = c_id_prox,
+        c_terra_prox        = c_terra_prox,
+        c_encerr_prox       = c_encerr_prox,
+        c_cidade_prox       = c_cidade_prox,
+        c_origem            = c_origem,
+        c_latencia          = c_latencia,
+        c_distancia         = c_distancia,
+        c_cluster_emp       = c_cluster_emp,
+        c_fund_emp          = c_fund_emp,
+        c_terra_emp         = c_terra_emp,
+        c_encerr_emp        = c_encerr_emp,
+        c_complexidade_emp  = c_complexidade_emp,
+        c_fonte_prox        = c_fonte_prox,
+        marco_inicio_obra_a = marco_inicio_obra_a,
+    )
+
+    with st.expander("📊 Ver resultado — Output Empilhado por Linha", expanded=True):
+        st.caption(
+            "🔑 **Linha** é o pivot. "
+            "**Tipo de Linha**: `Existente` = veio da guia Base | `Nova` = criada pelo app. "
+            "**Marco Início Obra A**: data usada como início da Obra A conforme seleção do usuário. "
+            "**Simultaneidade**: `Sim — devolvida ao pool` = obra estava simultânea e foi redistribuída. "
+            "**Fonte da Próxima Obra**: `DH` = veio da guia Base | `Ferramenta` = sugerida pelo app. "
+            "**Origem Sequenciamento**: `Sequenciamento DH` = já existia na Base | `Sequenciamento - ferramenta` = app sequenciou."
+        )
+        st.dataframe(
+            df_output.sort_values(["Linha", "Ordem"], na_position="last"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df_output.sort_values(["Linha", "Ordem"], na_position="last").to_excel(
+            writer, sheet_name="Sequenciamento", index=False
+        )
+        df_emp.to_excel(writer, sheet_name="Todos Empreendimentos", index=False)
+
+    st.download_button(
+        label     = "📥 Baixar Planilha Sequenciada",
+        data      = buffer.getvalue(),
+        file_name = "Sequenciamento_MRV.xlsx",
+        mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
