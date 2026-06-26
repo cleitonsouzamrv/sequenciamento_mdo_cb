@@ -170,10 +170,10 @@ def render_filtro_distancia_cluster() -> tuple[int, bool]:
     with col_dist:
         distancia_km = st.number_input(
             label="Distância máxima entre obras (km):",
-            min_value=50,
+            min_value=25,
             max_value=1000,
-            value=200,
-            step=50,
+            value=50,
+            step=25,
             key="filtro_distancia_km",
             help="Obras em cidades com distância superior a esse valor serão ignoradas no sequenciamento.",
         )
