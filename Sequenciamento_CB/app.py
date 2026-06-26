@@ -23,6 +23,8 @@ from ui import (
     render_diagnostico,
     render_download,
     render_filtro_latencia,
+    render_filtro_senioridade,
+    render_filtro_distancia_cluster,  # ── NOVO
     render_guia_colunas,
     render_preview,
     render_resultado,
@@ -36,7 +38,7 @@ from utils import (
 )
 
 st.set_page_config(page_title="Sequenciador de Obras MRV", layout="wide")
-st.title("🏗️ Sequenciamento de Capacete Branco")
+st.title("👷 Sequenciamento de Capacete Branco")
 st.markdown("Faça o upload das duas planilhas abaixo para iniciar o sequenciamento automático de obras.")
 
 render_guia_colunas()
@@ -64,8 +66,10 @@ render_preview(df_base, df_emp)
 render_diagnostico(df_base)
 
 st.divider()
-marco_inicio_obra_a   = render_configuracao_marco()
-latencia_maxima_meses = render_filtro_latencia()
+marco_inicio_obra_a                    = render_configuracao_marco()
+latencia_maxima_meses                  = render_filtro_latencia()
+usar_senioridade                       = render_filtro_senioridade()
+distancia_maxima_km, permitir_cluster_diferente = render_filtro_distancia_cluster()  # ── NOVO
 st.divider()
 
 if not render_botao_iniciar():
@@ -97,12 +101,16 @@ df_base_repr, obras_alocadas, nomes_dh_alocados = sequenciar_linhas_existentes(
     latencia_maxima_dias=latencia_maxima_meses * 30,
     nomes_base_completo=nomes_base_completo,
     ids_base_completo=ids_base_completo,
+    usar_senioridade=usar_senioridade,
+    distancia_maxima_km=distancia_maxima_km,                  # ── NOVO
+    permitir_cluster_diferente=permitir_cluster_diferente,    # ── NOVO
 )
 
 df_novas_linhas = sequenciar_novas_linhas(
     df_emp, coord_cache, obras_alocadas, info_devolvidas,
     latencia_maxima_dias=latencia_maxima_meses * 30,
     nomes_dh_alocados=nomes_dh_alocados,
+    distancia_maxima_km=distancia_maxima_km,                  # ── NOVO
 )
 
 mapa_emp  = df_emp.set_index(C_ID_EMP).to_dict(orient="index")

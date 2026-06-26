@@ -78,6 +78,7 @@ def render_upload():
 
     return arquivo_base, arquivo_empreendimentos
 
+
 def render_preview(df_base, df_emp):
     col_info1, col_info2 = st.columns(2)
     with col_info1:
@@ -88,6 +89,7 @@ def render_preview(df_base, df_emp):
         st.success(f"✅ Empreendimentos carregados — {len(df_emp)} registros")
         with st.expander("🔍 Pré-visualização — Sheet1", expanded=False):
             st.dataframe(df_emp, use_container_width=True)
+
 
 def render_configuracao_marco() -> str:
     st.markdown("#### ⚙️ Configuração do Marco de Início da Obra A")
@@ -112,6 +114,7 @@ def render_configuracao_marco() -> str:
         st.info("📌 Marco selecionado: **Fundação** — coluna `Data Fundação` (guia Base)")
     return marco
 
+
 def render_filtro_latencia() -> int:
     st.markdown("#### ⏱️ Tempo máximo de prateleira (latência)")
     st.caption(
@@ -121,12 +124,79 @@ def render_filtro_latencia() -> int:
     meses = st.selectbox(
         label="Latência máxima permitida:",
         options=[3, 4, 5, 6, 7],
-        index=0,  # padrão: 3 meses
+        index=0,
         format_func=lambda x: f"{x} mês" if x == 1 else f"{x} meses",
         key="filtro_latencia"
     )
     st.info(f"📌 Latência máxima: **{meses} meses** ({meses * 30} dias)")
     return meses
+
+
+def render_filtro_senioridade() -> bool:
+    st.markdown("#### 🎓 Filtro de Senioridade e Complexidade")
+    st.caption(
+        "Quando ativado, o sequenciador respeita a regra de complexidade por senioridade: "
+        "JUNIOR → apenas NÃO COMPLEXO | PLENO → NÃO COMPLEXO e MÉDIO | SENIOR → qualquer complexidade. "
+        "Quando desativado, esse critério é ignorado e apenas distância, cluster e latência são considerados."
+    )
+    usar = st.checkbox(
+        label="Considerar senioridade e complexidade no sequenciamento",
+        value=True,
+        key="filtro_senioridade",
+        help=(
+            "✅ **Marcado** → aplica o filtro de complexidade conforme a senioridade do ENG1.\n\n"
+            "☐ **Desmarcado** → ignora complexidade; sequencia usando apenas cluster, "
+            "distância (≤ 200 km) e latência."
+        ),
+    )
+    if usar:
+        st.info("📌 Senioridade/complexidade: **ativada** — regras de complexidade serão aplicadas.")
+    else:
+        st.warning("📌 Senioridade/complexidade: **desativada** — obras serão sequenciadas sem restrição de complexidade.")
+    return usar
+
+
+# ── NOVO ──────────────────────────────────────────────────────────────────────
+def render_filtro_distancia_cluster() -> tuple[int, bool]:
+    st.markdown("#### 📍 Distância máxima e cluster")
+    st.caption(
+        "Define o raio máximo (em km) entre a obra atual e a próxima obra candidata, "
+        "e se o sequenciador pode sugerir obras de **cluster diferente** como fallback "
+        "quando não houver candidatas no mesmo cluster."
+    )
+
+    col_dist, col_cluster = st.columns(2)
+
+    with col_dist:
+        distancia_km = st.number_input(
+            label="Distância máxima entre obras (km):",
+            min_value=50,
+            max_value=1000,
+            value=200,
+            step=50,
+            key="filtro_distancia_km",
+            help="Obras em cidades com distância superior a esse valor serão ignoradas no sequenciamento.",
+        )
+        st.info(f"📌 Distância máxima: **{distancia_km} km**")
+
+    with col_cluster:
+        permitir_cluster_diferente = st.checkbox(
+            label="Permitir obras de cluster diferente",
+            value=True,
+            key="filtro_cluster_diferente",
+            help=(
+                "✅ **Marcado** → se não houver candidatas no mesmo cluster, "
+                "o sequenciador tenta obras de outros clusters (dentro do raio e latência).\n\n"
+                "☐ **Desmarcado** → apenas obras do mesmo cluster são consideradas."
+            ),
+        )
+        if permitir_cluster_diferente:
+            st.info("📌 Cluster diferente: **permitido** — usado como fallback quando necessário.")
+        else:
+            st.warning("📌 Cluster diferente: **bloqueado** — apenas obras do mesmo cluster serão sugeridas.")
+
+    return distancia_km, permitir_cluster_diferente
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def render_botao_iniciar() -> bool:
@@ -177,7 +247,6 @@ def render_resultado(df_output):
             use_container_width=True,
             hide_index=True,
         )
-
 
 def render_download(df_output, df_emp):
     buffer = io.BytesIO()

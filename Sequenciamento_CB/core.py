@@ -59,7 +59,9 @@ def resolver_simultaneidade(df_base):
 
 
 def _aplicar_filtros_candidatas(cands, permitidas, coord_atual, coord_cache,
-                                 fim_atual, latencia_maxima_dias):
+                                 fim_atual, latencia_maxima_dias,
+                                 distancia_maxima_km=200):          # ── NOVO parâmetro
+    # permitidas == set() vazio quando usar_senioridade=False → bloco ignorado
     if permitidas:
         cands = cands[cands["_complexidade_norm"].isin(permitidas)].copy()
     if cands.empty:
@@ -69,7 +71,8 @@ def _aplicar_filtros_candidatas(cands, permitidas, coord_atual, coord_cache,
         lambda cid_b: geodesic(coord_atual, coord_cache.get(cid_b)).kilometers
         if coord_atual and coord_cache.get(cid_b) else 9999.0
     )
-    cands = cands[cands["_dist"] <= 200].copy()
+    # ── NOVO: usa distancia_maxima_km no lugar do 200 hardcoded
+    cands = cands[cands["_dist"] <= distancia_maxima_km].copy()
     if cands.empty:
         return cands
 
@@ -82,7 +85,10 @@ def _aplicar_filtros_candidatas(cands, permitidas, coord_atual, coord_cache,
 def sequenciar_linhas_existentes(df_base_repr, df_emp, coord_cache, info_devolvidas,
                                   latencia_maxima_dias=90,
                                   nomes_base_completo=None,
-                                  ids_base_completo=None):
+                                  ids_base_completo=None,
+                                  usar_senioridade=True,
+                                  distancia_maxima_km=200,          # ── NOVO parâmetro
+                                  permitir_cluster_diferente=True): # ── NOVO parâmetro
 
     df_candidatas = df_emp[
         df_emp[C_TERRA_EMP].notna() &
@@ -161,27 +167,33 @@ def sequenciar_linhas_existentes(df_base_repr, df_emp, coord_cache, info_devolvi
         if pd.isna(fim_atual) or pd.isna(cid_atual) or pd.isna(clu_atual):
             continue
 
-        permitidas  = complexidades_permitidas_para(sen_atual)
+        permitidas  = complexidades_permitidas_para(sen_atual) if usar_senioridade else set()
         coord_atual = coord_cache.get(cid_atual)
 
+        # ── tentativa 1: mesmo cluster
         cands = df_candidatas[
             (df_candidatas[C_TERRA_EMP] >= fim_atual) &
             (df_candidatas[C_CLUSTER_EMP] == clu_atual) &
             (~df_candidatas[C_ID_EMP].astype(str).str.strip().isin(obras_alocadas))
         ].copy()
 
-        cands        = _aplicar_filtros_candidatas(cands, permitidas, coord_atual,
-                                                   coord_cache, fim_atual, latencia_maxima_dias)
+        cands = _aplicar_filtros_candidatas(
+            cands, permitidas, coord_atual, coord_cache,
+            fim_atual, latencia_maxima_dias, distancia_maxima_km  # ── NOVO
+        )
         cluster_diff = False
 
-        if cands.empty:
+        # ── tentativa 2: cluster diferente (somente se permitir_cluster_diferente=True)
+        if cands.empty and permitir_cluster_diferente:             # ── NOVO
             cands = df_candidatas[
                 (df_candidatas[C_TERRA_EMP] >= fim_atual) &
                 (df_candidatas[C_CLUSTER_EMP] != clu_atual) &
                 (~df_candidatas[C_ID_EMP].astype(str).str.strip().isin(obras_alocadas))
             ].copy()
-            cands        = _aplicar_filtros_candidatas(cands, permitidas, coord_atual,
-                                                       coord_cache, fim_atual, latencia_maxima_dias)
+            cands = _aplicar_filtros_candidatas(
+                cands, permitidas, coord_atual, coord_cache,
+                fim_atual, latencia_maxima_dias, distancia_maxima_km  # ── NOVO
+            )
             cluster_diff = True
 
         if cands.empty:
@@ -221,7 +233,8 @@ def sequenciar_linhas_existentes(df_base_repr, df_emp, coord_cache, info_devolvi
 
 
 def sequenciar_novas_linhas(df_emp, coord_cache, obras_alocadas, info_devolvidas,
-                             latencia_maxima_dias=90, nomes_dh_alocados=None):
+                             latencia_maxima_dias=90, nomes_dh_alocados=None,
+                             distancia_maxima_km=200):              # ── NOVO parâmetro
 
     if nomes_dh_alocados:
         ids_bloqueados_por_nome = set(
@@ -313,7 +326,8 @@ def sequenciar_novas_linhas(df_emp, coord_cache, obras_alocadas, info_devolvidas
             coord_ult = coord_cache.get(info["ultima_cidade"])
             coord_emp = coord_cache.get(str(emp_row.get(C_CIDADE_EMP, "")))
             dist      = geodesic(coord_ult, coord_emp).kilometers if coord_ult and coord_emp else 9999.0
-            if dist > 200:
+            # ── NOVO: usa distancia_maxima_km no lugar do 200 hardcoded
+            if dist > distancia_maxima_km:
                 continue
             if melhor_gap is None or gap < melhor_gap:
                 melhor_gap     = gap
