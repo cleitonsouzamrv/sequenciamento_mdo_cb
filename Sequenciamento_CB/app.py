@@ -37,7 +37,7 @@ from utils import (
     validar_colunas,
 )
 
-st.set_page_config(page_title="Sequenciador de Obras MRV", layout="wide")
+st.set_page_config(page_title="Sequenciador de Obras - CB", layout="wide")
 st.title("👷 Sequenciamento de Capacete Branco")
 st.markdown("Faça o upload das duas planilhas abaixo para iniciar o sequenciamento automático de obras.")
 
