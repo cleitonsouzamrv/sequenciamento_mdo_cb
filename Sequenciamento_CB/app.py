@@ -1,4 +1,4 @@
-#app.py
+# app.py
 
 import datetime
 
@@ -24,9 +24,10 @@ from ui import (
     render_download,
     render_filtro_latencia,
     render_filtro_senioridade,
-    render_filtro_distancia_cluster,  # ── NOVO
+    render_filtro_distancia_cluster,
     render_guia_colunas,
     render_preview,
+    render_resumo_parametros,
     render_resultado,
     render_upload,
 )
@@ -66,14 +67,26 @@ render_preview(df_base, df_emp)
 render_diagnostico(df_base)
 
 st.divider()
-marco_inicio_obra_a                    = render_configuracao_marco()
-latencia_maxima_meses                  = render_filtro_latencia()
-usar_senioridade                       = render_filtro_senioridade()
-distancia_maxima_km, permitir_cluster_diferente = render_filtro_distancia_cluster()  # ── NOVO
+
+# ── Renderiza todos os filtros (apenas para exibição e captura no session_state)
+# ── Os valores REAIS usados no sequenciamento vêm dos snaps gravados no momento do clique
+render_configuracao_marco()
+render_filtro_latencia()
+render_filtro_senioridade()
+render_filtro_distancia_cluster()
+
 st.divider()
 
+# ── render_botao_iniciar() grava os snaps no momento do clique e retorna False até ser clicado
 if not render_botao_iniciar():
     st.stop()
+
+# ── Lê os valores congelados no momento do clique — imunes a reruns posteriores
+marco_inicio_obra_a        = st.session_state.get("snap_marco",            "Fundação")
+latencia_maxima_meses      = st.session_state.get("snap_latencia",         3)
+usar_senioridade           = st.session_state.get("snap_usar_senioridade", True)
+distancia_maxima_km        = st.session_state.get("snap_distancia_km",     50)
+permitir_cluster_diferente = st.session_state.get("snap_permitir_cluster", True)
 
 for col in [C_DATA_FUND, C_DATA_TERRA, C_DATA_ENCERR]:
     if col in df_base.columns:
@@ -102,15 +115,15 @@ df_base_repr, obras_alocadas, nomes_dh_alocados = sequenciar_linhas_existentes(
     nomes_base_completo=nomes_base_completo,
     ids_base_completo=ids_base_completo,
     usar_senioridade=usar_senioridade,
-    distancia_maxima_km=distancia_maxima_km,                  # ── NOVO
-    permitir_cluster_diferente=permitir_cluster_diferente,    # ── NOVO
+    distancia_maxima_km=distancia_maxima_km,
+    permitir_cluster_diferente=permitir_cluster_diferente,
 )
 
 df_novas_linhas = sequenciar_novas_linhas(
     df_emp, coord_cache, obras_alocadas, info_devolvidas,
     latencia_maxima_dias=latencia_maxima_meses * 30,
     nomes_dh_alocados=nomes_dh_alocados,
-    distancia_maxima_km=distancia_maxima_km,                  # ── NOVO
+    distancia_maxima_km=distancia_maxima_km,
 )
 
 mapa_emp  = df_emp.set_index(C_ID_EMP).to_dict(orient="index")
@@ -120,6 +133,8 @@ df_output = montar_output_empilhado(
 
 st.divider()
 st.success("✅ Sequenciamento concluído!")
+render_resumo_parametros()        # ── exibe parâmetros congelados usados no sequenciamento
+st.divider()
 render_resultado(df_output)
 st.divider()
 render_download(df_output, df_emp)

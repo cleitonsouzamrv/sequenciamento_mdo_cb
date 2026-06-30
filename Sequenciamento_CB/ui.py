@@ -1,4 +1,4 @@
-#ui.py
+# ui.py
 
 import io
 
@@ -156,7 +156,6 @@ def render_filtro_senioridade() -> bool:
     return usar
 
 
-# ── NOVO ──────────────────────────────────────────────────────────────────────
 def render_filtro_distancia_cluster() -> tuple[int, bool]:
     st.markdown("#### 📍 Distância máxima e cluster")
     st.caption(
@@ -196,7 +195,6 @@ def render_filtro_distancia_cluster() -> tuple[int, bool]:
             st.warning("📌 Cluster diferente: **bloqueado** — apenas obras do mesmo cluster serão sugeridas.")
 
     return distancia_km, permitir_cluster_diferente
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def render_botao_iniciar() -> bool:
@@ -207,13 +205,63 @@ def render_botao_iniciar() -> bool:
             type="primary",
             key="btn_iniciar"
         )
+
     if clicou:
-        st.session_state["sequenciamento_rodando"] = True
+        # ✅ Congela snapshot dos valores no momento exato do clique
+        st.session_state["sequenciamento_rodando"]  = True
+        st.session_state["snap_usar_senioridade"]   = st.session_state.get("filtro_senioridade",     True)
+        st.session_state["snap_distancia_km"]       = st.session_state.get("filtro_distancia_km",    50)
+        st.session_state["snap_permitir_cluster"]   = st.session_state.get("filtro_cluster_diferente", True)
+        st.session_state["snap_marco"]              = st.session_state.get("marco_inicio_obra_a",    "Fundação")
+        st.session_state["snap_latencia"]           = st.session_state.get("filtro_latencia",        3)
+
     if not st.session_state.get("sequenciamento_rodando", False):
         with col_status:
-            st.info("⏳ Configure o marco de início acima e clique em **▶️ Iniciar Sequenciamento** para começar.")
+            st.info("⏳ Configure os parâmetros acima e clique em **▶️ Iniciar Sequenciamento** para começar.")
         return False
+
     return True
+
+
+def render_resumo_parametros():
+    """Exibe um resumo visual dos parâmetros congelados no momento do clique."""
+    marco            = st.session_state.get("snap_marco",            "Fundação")
+    latencia         = st.session_state.get("snap_latencia",         3)
+    usar_senioridade = st.session_state.get("snap_usar_senioridade", True)
+    distancia_km     = st.session_state.get("snap_distancia_km",     50)
+    permitir_cluster = st.session_state.get("snap_permitir_cluster", True)
+
+    with st.expander("🧾 Parâmetros utilizados neste sequenciamento (clique para expandir)", expanded=True):
+        st.caption(
+            "Estes foram os valores **ativos no momento em que ▶️ Iniciar Sequenciamento foi clicado**. "
+            "A planilha gerada reflete exatamente estes critérios."
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown("**⚙️ Marco de Início da Obra A**")
+            st.info(f"📌 {marco}")
+
+            st.markdown("**⏱️ Latência Máxima**")
+            st.info(f"📌 {latencia} meses ({latencia * 30} dias)")
+
+        with col2:
+            st.markdown("**🎓 Senioridade e Complexidade**")
+            if usar_senioridade:
+                st.success("✅ Ativada — regras de complexidade por senioridade aplicadas")
+            else:
+                st.warning("⚠️ Desativada — complexidade ignorada no sequenciamento")
+
+            st.markdown("**📍 Distância Máxima entre Obras**")
+            st.info(f"📌 {distancia_km} km")
+
+        with col3:
+            st.markdown("**🗂️ Cluster Diferente como Fallback**")
+            if permitir_cluster:
+                st.success("✅ Permitido — usado quando não há candidatas no mesmo cluster")
+            else:
+                st.warning("⚠️ Bloqueado — apenas obras do mesmo cluster consideradas")
 
 
 def render_diagnostico(df_base):
@@ -247,6 +295,7 @@ def render_resultado(df_output):
             use_container_width=True,
             hide_index=True,
         )
+
 
 def render_download(df_output, df_emp):
     buffer = io.BytesIO()
